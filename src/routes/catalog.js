@@ -4,8 +4,10 @@ import { sendJSON, bad, readJSON, num, intCents, UNITS } from '../util.js';
 const PRODUCT_SELECT = `
   SELECT p.id, p.sku, p.name, p.emoji, p.unit,
          p.cost_cents AS costCents, p.price_cents AS priceCents,
+         p.wholesale_price_cents AS wholesalePriceCents,
          p.stock_qty AS stockQty, p.reorder_level AS reorderLevel,
          p.active, p.category_id AS categoryId, p.supplier_id AS supplierId,
+         p.variety, p.origin, p.shelf_life_days AS shelfLifeDays, p.storage_req AS storageReq,
          c.name AS category, c.emoji AS categoryEmoji, s.name AS supplier
   FROM products p
   LEFT JOIN categories c ON c.id = p.category_id
@@ -117,10 +119,15 @@ export function registerCatalogRoutes(router) {
     try {
       const sku = b.sku?.trim() || nextSku(categoryName);
       const r = db.prepare(`INSERT INTO products
-        (sku, name, emoji, category_id, supplier_id, unit, cost_cents, price_cents, stock_qty, reorder_level, active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
+        (sku, name, emoji, category_id, supplier_id, unit, cost_cents, price_cents, stock_qty, reorder_level,
+         variety, origin, shelf_life_days, storage_req, wholesale_price_cents, active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
         .run(sku, b.name.trim(), b.emoji || '', b.categoryId || null, b.supplierId || null,
-          unit, cost, price, stockQty, reorderLevel, b.active === false ? 0 : 1);
+          unit, cost, price, stockQty, reorderLevel,
+          b.variety || '', b.origin || '', intCents(b.shelfLifeDays ?? 7) || 7,
+          ['ambient', 'chilled', 'cold', 'dry'].includes(b.storageReq) ? b.storageReq : 'ambient',
+          b.wholesalePriceCents != null ? Math.max(Math.round(Number(b.wholesalePriceCents)) || 0, 0) : 0,
+          b.active === false ? 0 : 1);
       const pid = Number(r.lastInsertRowid);
       if (stockQty !== 0) {
         db.prepare('INSERT INTO inventory_log (product_id, change_qty, reason, note, created_at) VALUES (?, ?, ?, ?, datetime(?))')
@@ -152,12 +159,25 @@ export function registerCatalogRoutes(router) {
     setNum('costCents', 'cost_cents', intCents);
     setNum('priceCents', 'price_cents', intCents);
     setNum('reorderLevel', 'reorder_level', num);
+    if (b.shelfLifeDays != null) {
+      const v = intCents(b.shelfLifeDays);
+      if (Number.isNaN(v)) return bad(res, 'Invalid shelf life');
+      updates.push('shelf_life_days = ?'); args.push(v);
+    }
+    if (b.wholesalePriceCents != null) {
+      const v = Math.max(Math.round(Number(b.wholesalePriceCents)) || 0, 0);
+      updates.push('wholesale_price_cents = ?'); args.push(v);
+    }
+    if (b.storageReq != null) {
+      if (!['ambient', 'chilled', 'cold', 'dry'].includes(b.storageReq)) return bad(res, 'Invalid storage requirement');
+      updates.push('storage_req = ?'); args.push(b.storageReq);
+    }
 
     if (b.name != null) {
       if (!b.name.trim()) return bad(res, 'Product name is required');
       updates.push('name = ?'); args.push(b.name.trim());
     }
-    for (const [f, c] of [['sku', 'sku'], ['emoji', 'emoji'], ['unit', 'unit']]) {
+    for (const [f, c] of [['sku', 'sku'], ['emoji', 'emoji'], ['unit', 'unit'], ['variety', 'variety'], ['origin', 'origin']]) {
       if (b[f] != null) {
         if (c === 'unit' && !UNITS.includes(b[f])) return bad(res, 'Invalid unit');
         updates.push(`${c} = ?`); args.push(b[f]);

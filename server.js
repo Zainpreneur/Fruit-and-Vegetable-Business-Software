@@ -9,6 +9,10 @@ import { registerPeopleRoutes } from './src/routes/people.js';
 import { registerSalesRoutes } from './src/routes/sales.js';
 import { registerInventoryRoutes } from './src/routes/inventory.js';
 import { registerReportRoutes } from './src/routes/reports.js';
+import { registerOperationsRoutes } from './src/routes/operations.js';
+import { registerPurchasingRoutes } from './src/routes/purchasing.js';
+import { registerBillingRoutes } from './src/routes/billing.js';
+import { registerIntelligenceRoutes } from './src/routes/intelligence.js';
 import './src/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +53,10 @@ registerPeopleRoutes(router);
 registerSalesRoutes(router);
 registerInventoryRoutes(router);
 registerReportRoutes(router);
+registerOperationsRoutes(router);
+registerPurchasingRoutes(router);
+registerBillingRoutes(router);
+registerIntelligenceRoutes(router);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);

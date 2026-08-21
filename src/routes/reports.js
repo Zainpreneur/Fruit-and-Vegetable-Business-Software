@@ -71,6 +71,22 @@ export function registerReportRoutes(router) {
       FROM sales s LEFT JOIN customers c ON c.id = s.customer_id
       ORDER BY s.created_at DESC, s.id DESC LIMIT 8`).all();
 
+    const stockValue = db.prepare(`
+      SELECT COALESCE(SUM(qty_remaining * unit_cost_cents),0) AS v
+      FROM batches WHERE status IN ('available','quarantined')`).get().v;
+    const expSoon = db.prepare(`
+      SELECT COUNT(*) AS n, COALESCE(SUM(qty_remaining * unit_cost_cents),0) AS v
+      FROM batches WHERE status = 'available' AND expiry_date <= datetime('now', '+3 days')`).get();
+    const urgentCount = db.prepare(`
+      SELECT COUNT(*) AS n FROM batches
+      WHERE status='available' AND expiry_date <= datetime('now', '+2 days')`).get().n;
+    const waste7 = db.prepare(`
+      SELECT COALESCE(SUM(value_cents),0) AS v FROM waste WHERE created_at >= datetime('now','-7 days')`).get().v;
+    const breaches = db.prepare(`SELECT COUNT(*) AS n FROM zones z WHERE z.min_temp IS NOT NULL AND (
+      (SELECT temp_c FROM temperature_readings r WHERE r.zone_id=z.id ORDER BY recorded_at DESC LIMIT 1) < z.min_temp OR
+      (SELECT temp_c FROM temperature_readings r WHERE r.zone_id=z.id ORDER BY recorded_at DESC LIMIT 1) > z.max_temp)`).get().n;
+    const openPOs = db.prepare("SELECT COUNT(*) AS n FROM purchase_orders WHERE status IN ('draft','ordered','receiving')").get().n;
+
     sendJSON(res, 200, {
       todayRevenueCents: today.total,
       todayOrders: today.orders,
@@ -83,6 +99,12 @@ export function registerReportRoutes(router) {
       lowStock,
       series,
       recentOrders,
+      stockValueCents: stockValue,
+      expiringSoonCount: expSoon.n,
+      expiringSoonValueCents: expSoon.v,
+      waste7dValueCents: waste7,
+      coldChainBreaches: breaches,
+      openPOs,
     });
   });
 

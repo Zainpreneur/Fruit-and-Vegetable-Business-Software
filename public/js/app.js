@@ -204,6 +204,13 @@ ROUTES.dashboard = ['Dashboard', async (el) => {
       <div class="card stat"><div class="stat-label">Low Stock</div><div class="stat-value">${d.lowStockCount}</div><div class="stat-sub">items at or below reorder level</div></div>
       <div class="card stat"><div class="stat-label">Catalog</div><div class="stat-value">${d.productCount}</div><div class="stat-sub">${d.customerCount} registered customers</div></div>
     </div>
+    <div class="grid-cards mt" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+      <div class="card stat" style="padding:14px 16px"><div class="stat-label">Stock Value (at cost)</div><div class="stat-value" style="font-size:20px">${money(d.stockValueCents)}</div></div>
+      <div class="card stat" style="padding:14px 16px"><div class="stat-label">Expiring ≤3 days</div><div class="stat-value" style="font-size:20px;color:${d.expiringSoonCount ? 'var(--amber)' : 'inherit'}">${money(d.expiringSoonValueCents)}</div><div class="stat-sub">${d.expiringSoonCount} batch(es)</div></div>
+      <div class="card stat" style="padding:14px 16px"><div class="stat-label">Waste · last 7 days</div><div class="stat-value" style="font-size:20px">${money(d.waste7dValueCents)}</div></div>
+      <div class="card stat" style="padding:14px 16px"><div class="stat-label">Cold Chain</div><div class="stat-value" style="font-size:20px;color:${d.coldChainBreaches ? 'var(--red)' : 'var(--green)'}">${d.coldChainBreaches ? d.coldChainBreaches + ' breach' + (d.coldChainBreaches === 1 ? '' : 'es') : 'OK'}</div></div>
+      <div class="card stat" style="padding:14px 16px"><div class="stat-label">Open POs</div><div class="stat-value" style="font-size:20px">${d.openPOs}</div></div>
+    </div>
     <div class="dash-grid">
       <div class="panel-stack">
         <div class="card chart-wrap"><h2>Revenue · last 14 days</h2><canvas id="chart" height="240"></canvas><div id="chart-tip"></div></div>
@@ -301,7 +308,12 @@ function renderCartPanel() {
     }</div>
     <div class="form-row"><label>Discount %</label>
       <input type="number" id="cart-discount" class="field" min="0" max="100" value="${pct}"></div>
-    <div class="form-row"><label>Customer</label>
+    <div class="form-row"><label>Sale channel</label>
+      <select id="cart-channel" class="field">
+        <option value="retail" ${saleChannel === 'retail' ? 'selected' : ''}>🛒 Retail counter</option>
+        <option value="b2b" ${saleChannel === 'b2b' ? 'selected' : ''}>🏢 Wholesale / B2B</option>
+      </select></div>
+    <div class="form-row"><label>Customer${saleChannel !== 'retail' ? ' *' : ''}</label>
       <select id="cart-customer" class="field"><option value="">Walk-in customer</option>${
         (posCustomers || []).map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')
       }</select></div>
@@ -344,6 +356,10 @@ function renderCartPanel() {
   const custSel = panel.querySelector('#cart-customer');
   custSel.value = selectedCustomerId ?? '';
   custSel.onchange = () => (selectedCustomerId = custSel.value ? Number(custSel.value) : null);
+  panel.querySelector('#cart-channel').onchange = (e) => {
+    saleChannel = e.target.value;
+    renderCartPanel();
+  };
 
   panel.querySelector('#checkout')?.addEventListener('click', async () => {
     const btn = $('#checkout');
@@ -355,7 +371,10 @@ function renderCartPanel() {
         customerId: selectedCustomerId || null,
         discountPct: Number($('#cart-discount').value) || 0,
         paymentMethod: $('#cart-pay').value,
+        channel: saleChannel,
       };
+      if (saleChannel !== 'retail' && !payload.customerId)
+        return toast('Select a customer for B2B sales', true);
       const sale = await api('/sales', { method: 'POST', body: JSON.stringify(payload) });
       cart.clear();
       selectedCustomerId = null;
@@ -390,6 +409,7 @@ let posProducts = [];
 let posCategories = [];
 let posCustomers = [];
 let selectedCustomerId = null;
+let saleChannel = 'retail';
 
 async function bootPos(skipData = false) {
   const tiles = $('#pos-tiles');
@@ -467,6 +487,17 @@ async function productForm(existing) {
         <div class="form-row"><label>Retail price *</label><input name="price" class="field" type="number" step="0.01" min="0" required value="${existing ? (existing.priceCents / 100).toFixed(2) : ''}"></div>
         <div class="form-row"><label>Cost / unit</label><input name="cost" class="field" type="number" step="0.01" min="0" value="${existing ? (existing.costCents / 100).toFixed(2) : ''}"></div>
       </div>
+      <div class="form-cols-3">
+        <div class="form-row"><label>Wholesale price</label><input name="wholesale" class="field" type="number" step="0.01" min="0" value="${existing && existing.wholesalePriceCents ? (existing.wholesalePriceCents / 100).toFixed(2) : ''}" placeholder="auto 80%"></div>
+        <div class="form-row"><label>Shelf life (days)</label><input name="shelfLife" class="field" type="number" min="1" max="365" value="${existing?.shelfLifeDays || 7}"></div>
+        <div class="form-row"><label>Storage requirement</label><select name="storageReq" class="field">
+          ${['ambient', 'chilled', 'cold', 'dry'].map((s) => `<option ${existing?.storageReq === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select></div>
+      </div>
+      <div class="form-cols">
+        <div class="form-row"><label>Variety</label><input name="variety" class="field" placeholder="e.g. Roma" value="${esc(existing?.variety || '')}"></div>
+        <div class="form-row"><label>Origin</label><input name="origin" class="field" placeholder="e.g. Green Valley Farms" value="${esc(existing?.origin || '')}"></div>
+      </div>
       ${
         isEdit
           ? ''
@@ -495,6 +526,11 @@ async function productForm(existing) {
       priceCents: Math.round(parseFloat(f.get('price')) * 100),
       costCents: Math.round(parseFloat(f.get('cost') || 0) * 100),
       reorderLevel: parseFloat(f.get('reorderLevel') || 0),
+      wholesalePriceCents: f.get('wholesale') ? Math.round(parseFloat(f.get('wholesale')) * 100) : 0,
+      shelfLifeDays: parseInt(f.get('shelfLife'), 10) || 7,
+      storageReq: f.get('storageReq'),
+      variety: f.get('variety'),
+      origin: f.get('origin'),
     };
     if (!isEdit) payload.stockQty = parseFloat(f.get('stockQty') || 0);
     else payload.active = $('#pf input[name=active]').checked;
@@ -854,15 +890,38 @@ ROUTES.orders = ['Orders', async (el) => {
   await load();
 }];
 
+function traceabilityHTML(s) {
+  if (!s.allocations || !s.allocations.length)
+    return '<p class="muted small">No batch allocations recorded for this order.</p>';
+  return `<table class="tbl"><thead><tr><th>Product</th><th>Batch</th><th>Grade</th><th class="num">Qty</th><th>Supplier / Origin</th></tr></thead>
+    <tbody>${s.allocations.map((a) => `<tr>
+      <td>${esc(a.productName)}</td>
+      <td><span class="badge blue">${esc(a.batchCode)}</span></td>
+      <td>${esc(a.grade)}</td>
+      <td class="num">${fmtQty(a.qty)}</td>
+      <td class="muted">${esc(a.supplierName || '—')}</td></tr>`).join('')}</tbody></table>`;
+}
+
 async function orderDetail(id) {
   const s = await api('/sales/' + id);
+  const isInvoice = s.payment_method === 'invoice';
   openModal(
     modalShell(
       `Order #${s.id} · ${new Date(s.created_at).toLocaleString()}`,
       `
+      <div class="flex mb" style="gap:8px">
+        ${statusBadge(s.status)}
+        <span class="badge ${s.channel === 'retail' ? 'green' : s.channel === 'b2b' ? 'blue' : 'amber'}">${esc(s.channel)}</span>
+        ${payBadge(s.payment_method)}
+        ${s.due_date ? `<span class="muted small">due ${esc(s.due_date.slice(0, 10))}</span>` : ''}
+        ${isInvoice ? `<span class="grow"></span><strong>Paid ${money(s.paidCents)} · Balance <span style="color:${s.balanceCents > 0 ? 'var(--red)' : 'var(--green)'}">${money(s.balanceCents)}</span></strong>` : ''}
+      </div>
       ${receiptHTML({ ...s, createdAt: s.created_at })}
+      <h2 style="font-size:15px;margin:18px 0 8px">🔗 Batch Traceability (FEFO)</h2>
+      ${traceabilityHTML(s)}
       `,
-      `${s.status === 'completed' ? '<button class="btn danger" id="refund-btn">↩ Refund Order</button>' : ''}
+      `${isInvoice && s.balanceCents > 0 && s.status === 'completed' ? '<button class="btn" id="pay-btn">💵 Record Payment</button>' : ''}
+       ${s.status === 'completed' ? '<button class="btn danger" id="refund-btn">↩ Refund Order</button>' : ''}
        <button class="btn" id="od-print">🖨 Print</button>
        <button class="btn primary" data-close>Done</button>`,
     ),
@@ -884,6 +943,44 @@ async function orderDetail(id) {
       toast(e.message, true);
     }
   });
+  $('#pay-btn')?.addEventListener('click', () => paymentForm(s));
+}
+
+function paymentForm(sale) {
+  openModal(
+    modalShell(
+      `Record Payment · Order #${sale.id}`,
+      `<form id="pf2">
+        <p class="muted small" style="margin-top:0">Balance due: <strong>${money(sale.balanceCents)}</strong> · Customer: ${esc(sale.customerName || '')}</p>
+        <div class="form-cols">
+          <div class="form-row"><label>Amount *</label><input name="amount" class="field" type="number" step="0.01" min="0.01" max="${(sale.balanceCents / 100).toFixed(2)}" value="${(sale.balanceCents / 100).toFixed(2)}" required></div>
+          <div class="form-row"><label>Method</label><select name="method" class="field">
+            <option value="cash">Cash</option><option value="card">Card</option><option value="mobile">Mobile</option><option value="transfer">Bank transfer</option>
+          </select></div>
+        </div>
+      </form>`,
+      `<button class="btn" data-close>Cancel</button><button class="btn primary" id="pf2-save">Save Payment</button>`
+    )
+  );
+  bindModalClose($('#modal-content'));
+  $('#pf2-save').onclick = async () => {
+    const f = new FormData($('#pf2'));
+    try {
+      await api('/payments', {
+        method: 'POST',
+        body: JSON.stringify({
+          saleId: sale.id,
+          amountCents: Math.round(parseFloat(f.get('amount')) * 100),
+          method: f.get('method'),
+        }),
+      });
+      closeModal();
+      toast('Payment recorded');
+      route();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
 }
 
 ROUTES.customers = ['Customers', async (el) => {
@@ -942,6 +1039,12 @@ ROUTES.customers = ['Customers', async (el) => {
             <div class="form-row"><label>Phone</label><input name="phone" class="field" value="${esc(existing?.phone || '')}"></div>
             <div class="form-row"><label>Email</label><input name="email" class="field" type="email" value="${esc(existing?.email || '')}"></div>
           </div>
+          <div class="form-cols">
+            <div class="form-row"><label>Segment</label><select name="segment" class="field">
+              ${['retail', 'restaurant', 'hotel', 'cafe', 'caterer', 'reseller', 'corporate', 'wholesale'].map((sg) => `<option ${(existing?.segment || 'retail') === sg ? 'selected' : ''}>${sg}</option>`).join('')}
+            </select></div>
+            <div class="form-row"><label>Payment terms</label><input name="payment_terms" class="field" placeholder='e.g. "net14"' value="${esc(existing?.paymentTerms || '')}"></div>
+          </div>
           <div class="form-row"><label>Notes</label><textarea name="notes" class="field" rows="2">${esc(existing?.notes || '')}</textarea></div>
         </form>`,
         `<button class="btn" data-close>Cancel</button><button class="btn primary" id="custf-save">${isEdit ? 'Save' : 'Add'}</button>`
@@ -987,11 +1090,13 @@ ROUTES.suppliers = ['Suppliers', async (el) => {
               ${s.phone ? `<div class="sc-row">📞 ${esc(s.phone)}</div>` : ''}
               ${s.email ? `<div class="sc-row">✉️ ${esc(s.email)}</div>` : ''}
               <div class="flex mt">
-                <button class="btn sm grow" data-edit="${s.id}">Edit</button>
+                <button class="btn sm grow" data-perf="${s.id}">📊 Performance</button>
+                <button class="btn sm" data-edit="${s.id}">Edit</button>
                 <button class="btn sm danger" data-del="${s.id}">Delete</button>
               </div>
             </div>`)
             .join('');
+    $$('#sup-grid [data-perf]').forEach((b) => (b.onclick = () => supPerformance(Number(b.dataset.perf))));
     $$('#sup-grid [data-edit]').forEach((b) => (b.onclick = () => supForm(rows.find((r) => r.id === Number(b.dataset.edit)))));
     $$('#sup-grid [data-del]').forEach((b) =>
       (b.onclick = async () => {
@@ -1006,6 +1111,33 @@ ROUTES.suppliers = ['Suppliers', async (el) => {
         }
       })
     );
+  }
+
+  async function supPerformance(id) {
+    const s = rows.find((r) => r.id === id);
+    const p = await api(`/suppliers/${id}/performance`);
+    openModal(
+      modalShell(`📊 Performance · ${esc(s.name)}`,
+        `<div class="grid-cards">
+          <div class="stat"><div class="stat-label">Purchase orders</div><div class="stat-value" style="font-size:20px">${p.totalPOs}</div><div class="stat-sub">${p.completedPOs} completed</div></div>
+          <div class="stat"><div class="stat-label">Acceptance rate</div><div class="stat-value" style="font-size:20px;color:${p.acceptanceRatePct >= 90 ? 'var(--green)' : p.acceptanceRatePct >= 75 ? 'var(--amber)' : 'var(--red)'}">${p.acceptanceRatePct}%</div><div class="stat-sub">of received qty</div></div>
+          <div class="stat"><div class="stat-label">Total purchased</div><div class="stat-value" style="font-size:20px">${money(p.totalValueCents)}</div></div>
+        </div>
+        <h2 style="font-size:15px;margin:16px 0 8px">Waste traceable to this supplier (30d)</h2>
+        <p style="margin:0 0 12px"><strong style="color:${p.wasteValueCents30d ? 'var(--red)' : 'var(--green)'}">${money(p.wasteValueCents30d)}</strong> <span class="muted small">across ${p.wasteEvents30d} disposal event(s)</span></p>
+        <table class="tbl"><thead><tr><th>PO</th><th>Status</th><th class="num">Ordered</th><th class="num">Accepted</th><th class="num">Rejected</th><th class="num">Value</th></tr></thead>
+        <tbody>${p.recentPOs.length === 0 ? '<tr><td colspan="6" class="muted">No purchase orders yet.</td></tr>' : p.recentPOs.map((po) => `<tr>
+          <td><strong>#${po.code}</strong></td>
+          <td><span class="badge gray">${po.status}</span></td>
+          <td class="num">${fmtQty(po.orderedQty)}</td>
+          <td class="num" style="color:var(--green)">${fmtQty(po.acceptedQty)}</td>
+          <td class="num" style="color:${po.rejectedQty ? 'var(--red)' : 'inherit'}">${fmtQty(po.rejectedQty)}</td>
+          <td class="num">${money(po.valueCents)}</td></tr>`).join('')}</tbody></table>
+        ${p.worstProducts.length ? `<h2 style="font-size:15px;margin:16px 0 8px">Most wasted items from this supplier</h2>
+        ${p.worstProducts.map((w) => `<div class="flex small mb"><span>${esc(w.productName)}</span><span class="grow"></span><strong style="color:var(--red)">${money(w.valueCents)}</strong></div>`).join('')}` : ''}`,
+        `<button class="btn primary" data-close>Close</button>`),
+      true);
+    bindModalClose($('#modal-content'));
   }
 
   function supForm(existing) {
@@ -1098,6 +1230,759 @@ ROUTES.reports = ['Reports', async (el) => {
     })
   );
   await load();
+}];
+
+const STATE_META = {
+  fresh: ['🟢 Fresh', 'fresh'],
+  aging: ['🔵 Aging', 'aging'],
+  urgent: ['🟠 Urgent', 'urgent'],
+  expired: ['🔴 Expired', 'expired'],
+};
+
+function batchCard(b) {
+  const col = STATE_META[b.state] ? b.state : 'expired';
+  return `<div class="batch-card ${col}" data-id="${b.id}">
+    <div class="bc-top">${esc(b.emoji) || '📦'} <span class="grow">${esc(b.productName)}</span>
+      <span class="badge ${b.grade === 'A' ? 'green' : b.grade === 'B' ? 'blue' : 'gray'}">${esc(b.grade)}</span></div>
+    <div class="bc-meta">
+      ${esc(b.code)} · <strong>${fmtQty(b.qty_remaining)} ${esc(b.unit)}</strong> · ${money(b.valueCents)}
+      <br>${b.daysLeft >= 0 ? `⏳ ${b.daysLeft}d left` : `⚠️ ${-b.daysLeft}d overdue`}
+      ${b.discount_pct ? ` · <strong style="color:var(--amber)">-${b.discount_pct}%</strong>` : ''}
+      ${b.state === 'quarantined' ? ' · 🚫 Quarantined' : ''}
+    </div>
+  </div>`;
+}
+
+ROUTES.batches = ['Batches & Lots', async (el) => {
+  el.innerHTML = `
+    <div class="toolbar">
+      <input type="search" id="bq" placeholder="🔍 Search product, code or origin…">
+      <div class="spacer"></div>
+      <button class="btn" id="log-temp">🌡️ Log Temperature</button>
+    </div>
+    <div class="kanban" id="kanban"></div>
+    <h2 style="font-size:16px;margin:20px 0 12px">❄️ Storage Zones / Cold Chain</h2>
+    <div class="supplier-grid" id="zones"><div class="empty">Loading…</div></div>`;
+
+  async function load() {
+    const q = $('#bq').value.trim();
+    const [list, zones] = await Promise.all([
+      api('/batches' + (q ? '?q=' + encodeURIComponent(q) + '&open=1' : '')),
+      api('/zones'),
+    ]);
+    const cols = { fresh: [], aging: [], urgent: [], expired: [] };
+    for (const b of list) cols[STATE_META[b.state] ? b.state : 'expired'].push(b);
+    $('#kanban').innerHTML = Object.entries(STATE_META).map(([state, [label]]) => `
+      <div class="kanban-col ${state}">
+        <h3>${label}<span>${cols[state].length}</span></h3>
+        ${cols[state].map(batchCard).join('') || '<div class="muted small" style="padding:6px 2px">—</div>'}
+      </div>`).join('');
+    $$('#kanban .batch-card').forEach((c) => (c.onclick = () => batchModal(Number(c.dataset.id), load)));
+    $('#zones').innerHTML = zones.map((z) => `
+      <div class="card zone-card ${z.breach ? 'breach' : ''}">
+        <div class="flex"><strong class="grow">${esc(z.name)}</strong>
+          ${z.breach ? '<span class="badge red">BREACH</span>' : z.lastTemp != null ? '<span class="badge green">OK</span>' : ''}</div>
+        <div class="sc-row">🌡️ Last: <strong>${z.lastTemp != null ? z.lastTemp + ' °C' : 'no readings'}</strong> · limits ${z.min_temp ?? '–'}…${z.max_temp ?? '–'} °C</div>
+        <div class="sc-row">📦 ${z.batchCount} batch(es) stored</div>
+        <button class="btn sm mt" data-zone="${z.id}">＋ Log reading</button>
+      </div>`).join('');
+    $$('#zones [data-zone]').forEach((btn) =>
+      (btn.onclick = async () => {
+        const v = prompt('Temperature °C for this zone:');
+        if (v == null || v === '') return;
+        try {
+          const r = await api(`/zones/${btn.dataset.zone}/readings`, { method: 'POST', body: JSON.stringify({ tempC: parseFloat(v) }) });
+          toast(r.breach ? '⚠️ Reading recorded — BREACH detected!' : 'Reading recorded');
+          load();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      })
+    );
+  }
+
+  $('#log-temp').onclick = () => $('#zones').scrollIntoView({ behavior: 'smooth' });
+  $('#bq').addEventListener('input', debounce(load));
+  await load();
+}];
+
+async function batchModal(id, onDone) {
+  const b = await api('/batches/' + id);
+  openModal(
+    modalShell(
+      `${esc(b.emoji)} ${esc(b.productName)} · ${esc(b.code)}`,
+      `
+      <table class="tbl"><tbody>
+        <tr><td>Grade</td><td><strong>${esc(b.grade)}</strong> ${b.discount_pct ? `<span class="badge amber">-${b.discount_pct}% markdown</span>` : ''}</td>
+            <td>Status</td><td>${b.status === 'available' ? '<span class="badge green">Available</span>' : `<span class="badge gray">${esc(b.status)}</span>`}</td></tr>
+        <tr><td>Remaining</td><td><strong>${fmtQty(b.qty_remaining)} / ${fmtQty(b.qty_initial)} ${esc(b.unit)}</strong></td>
+            <td>Value at cost</td><td><strong>${money(Math.round(b.qty_remaining * b.unit_cost_cents))}</strong></td></tr>
+        <tr><td>Supplier</td><td colspan="3">${esc(b.supplierName || '—')} · Origin: ${esc(b.origin || '—')}</td></tr>
+        <tr><td>Received</td><td>${esc((b.received_at || '').slice(0, 10))}</td>
+            <td>Expires</td><td><strong>${esc((b.expiry_date || '').slice(0, 10))}</strong> (${b.expiry_date <= new Date().toISOString().slice(0, 19).replace('T', ' ').slice(0, 10) ? 'expired' : Math.ceil((new Date(b.expiry_date) - Date.now()) / 86400000) + 'd'})</td></tr>
+        <tr><td>Zone</td><td colspan="3">${esc(b.zoneName || 'Unassigned')}</td></tr>
+      </tbody></table>
+      ${b.inspections.length ? `<h2 style="font-size:15px;margin:16px 0 8px">🔍 Inspections (${b.inspections.length})</h2>
+        <table class="tbl"><thead><tr><th>Date</th><th>Result</th><th>Scores A/F/R/D</th><th>Acc/Rej</th></tr></thead>
+        <tbody>${b.inspections.slice(0, 5).map((i) => `<tr>
+          <td class="muted small">${esc((i.created_at || '').slice(0, 10))}</td>
+          <td><span class="badge ${i.result === 'pass' ? 'green' : i.result === 'partial' ? 'amber' : 'red'}">${esc(i.result)}</span></td>
+          <td class="muted small">${i.appearance}/${i.firmness}/${i.ripeness}/${i.damage}${i.temp_c != null ? ' · ' + i.temp_c + '°C' : ''}</td>
+          <td class="num small">${fmtQty(i.accepted_qty)}/${fmtQty(i.rejected_qty)}</td></tr>`).join('')}</tbody></table>` : ''}
+      `,
+      `<button class="btn" id="bm-inspect">🔍 Inspect</button>
+       <button class="btn" id="bm-discount">% Markdown</button>
+       <button class="btn danger" id="bm-dispose">🗑️ Dispose</button>
+       <button class="btn primary" data-close>Close</button>`
+    ),
+    true
+  );
+  bindModalClose($('#modal-content'));
+  $('#bm-discount').onclick = () => markdownForm(b, onDone);
+  $('#bm-dispose').onclick = () => disposeForm(b, onDone);
+  $('#bm-inspect').onclick = () => inspectForm(b, onDone);
+}
+
+async function markdownForm(b, onDone) {
+  openModal(
+    modalShell(`Markdown · ${esc(b.code)}`,
+      `<form id="mkf">
+        <p class="muted small" style="margin-top:0">Current markdown: <strong>${b.discount_pct}%</strong>. POS prices from this batch drop accordingly (grade multiplier still applies).</p>
+        <div class="form-row"><label>Discount %</label><input name="pct" type="number" min="0" max="100" value="${Math.max(b.discount_pct, 25)}" class="field"></div>
+      </form>`,
+      `<button class="btn" data-close>Cancel</button><button class="btn primary" id="mkf-go">Apply</button>`));
+  bindModalClose($('#modal-content'));
+  $('#mkf-go').onclick = async () => {
+    const pct = parseInt(new FormData($('#mkf')).get('pct'), 10) || 0;
+    await api(`/batches/${b.id}/discount`, { method: 'POST', body: JSON.stringify({ discountPct: pct }) });
+    closeModal();
+    toast(`${b.code} marked down ${pct}%`);
+    onDone?.();
+  };
+}
+
+async function disposeForm(b, onDone) {
+  const reasons = await api('/meta/waste-reasons');
+  openModal(
+    modalShell(`Dispose stock · ${esc(b.code)}`,
+      `<form id="dpf">
+        <p class="muted small" style="margin-top:0">Remaining in batch: <strong>${fmtQty(b.qty_remaining)} ${esc(b.unit)}</strong>. Disposal is recorded as waste at cost value.</p>
+        <div class="form-cols">
+          <div class="form-row"><label>Quantity *</label><input name="qty" type="number" step="any" min="0.01" max="${b.qty_remaining}" value="${b.qty_remaining}" class="field" required></div>
+          <div class="form-row"><label>Reason</label><select name="reason" class="field">
+            ${reasons.map((r) => `<option value="${r}">${r.replace(/_/g, ' ')}</option>`).join('')}
+          </select></div>
+        </div>
+        <div class="form-row"><label>Note</label><input name="note" class="field" placeholder="Optional details"></div>
+      </form>`,
+      `<button class="btn" data-close>Cancel</button><button class="btn danger" id="dpf-go">Record Waste</button>`));
+  bindModalClose($('#modal-content'));
+  $('#dpf-go').onclick = async () => {
+    const f = new FormData($('#dpf'));
+    try {
+      await api(`/batches/${b.id}/dispose`, {
+        method: 'POST',
+        body: JSON.stringify({ qty: parseFloat(f.get('qty')), reason: f.get('reason'), note: f.get('note') }),
+      });
+      closeModal();
+      toast('Disposal recorded');
+      onDone?.();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+}
+
+async function inspectForm(b, onDone) {
+  openModal(
+    modalShell(`Quality inspection · ${esc(b.code)}`,
+      `<form id="iqf">
+        <div class="form-cols-3">
+          ${[['appearance', 'Appearance'], ['firmness', 'Firmness'], ['ripeness', 'Ripeness']].map(([n, l]) => `
+            <div class="form-row"><label>${l} (1-5)</label><input name="${n}" type="number" min="1" max="5" value="4" class="field"></div>`).join('')}
+        </div>
+        <div class="form-cols-3">
+          <div class="form-row"><label>Damage level (1=min)</label><input name="damage" type="number" min="1" max="5" value="2" class="field"></div>
+          <div class="form-row"><label>Pulp temp °C</label><input name="tempC" type="number" step="0.1" class="field" placeholder="e.g. 5.5"></div>
+          <div class="form-row"><label>Rejected qty</label><input name="rejectedQty" type="number" step="any" min="0" max="${b.qty_remaining}" value="0" class="field"></div>
+        </div>
+        <div class="form-cols">
+          <div class="form-row"><label>Outcome</label><select name="result" class="field">
+            <option value="pass">Pass — accept into stock</option>
+            <option value="partial">Partial — reject some qty</option>
+            <option value="quarantine">Quarantine pending review</option>
+            <option value="reject">Reject whole batch</option>
+          </select></div>
+          <div class="form-row"><label>Inspector</label><input name="inspector" class="field" placeholder="Name / desk"></div>
+        </div>
+        <div class="form-row"><label>Notes</label><input name="notes" class="field" placeholder="Defects observed…"></div>
+      </form>`,
+      `<button class="btn" data-close>Cancel</button><button class="btn primary" id="iqf-go">Save Inspection</button>`),
+    true);
+  bindModalClose($('#modal-content'));
+  $('#iqf-go').onclick = async () => {
+    const f = new FormData($('#iqf'));
+    try {
+      await api(`/batches/${b.id}/inspect`, {
+        method: 'POST',
+        body: JSON.stringify({
+          appearance: +f.get('appearance'), firmness: +f.get('firmness'),
+          ripeness: +f.get('ripeness'), damage: +f.get('damage'),
+          tempC: f.get('tempC') ? parseFloat(f.get('tempC')) : null,
+          rejectedQty: parseFloat(f.get('rejectedQty')) || 0,
+          result: f.get('result'), inspector: f.get('inspector'), notes: f.get('notes'),
+        }),
+      });
+      closeModal();
+      toast('Inspection saved');
+      onDone?.();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+}
+
+ROUTES.purchasing = ['Purchasing', async (el) => {
+  el.innerHTML = `
+    <div class="toolbar">
+      <input type="search" id="poq" placeholder="🔍 Filter supplier or code…" hidden>
+      <div class="spacer"></div>
+      <button class="btn primary" id="new-po">＋ New Purchase Order</button>
+    </div>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>PO</th><th>Supplier</th><th>Status</th><th>Expected</th><th class="num">Est. Value</th><th>Progress</th><th class="right">Actions</th></tr></thead>
+      <tbody id="pobody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+    </table></div>`;
+
+  async function load() {
+    const rows = await api('/purchase-orders');
+    const stBadge = (st) => ({ draft: 'gray', ordered: 'blue', receiving: 'amber', completed: 'green', cancelled: 'red' }[st] || 'gray');
+    $('#pobody').innerHTML =
+      rows.length === 0
+        ? '<tr><td colspan="7" class="empty"><span class="big">📋</span>No purchase orders yet.</td></tr>'
+        : rows
+            .map((po) => `<tr data-id="${po.id}" style="cursor:pointer">
+              <td><strong>#${po.code}</strong></td>
+              <td>${esc(po.supplierName)}</td>
+              <td><span class="badge ${stBadge(po.status)}">${po.status}</span></td>
+              <td class="muted">${po.expected_date ? esc(po.expected_date.slice(0, 10)) : '—'}</td>
+              <td class="num">${money(po.status === 'completed' ? po.acceptedValueCents : po.est_total_cents)}</td>
+              <td><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:${po.totalQty ? Math.min(100, (po.receivedQty / po.totalQty) * 100) : 0}%"></div></div><span class="small muted">${fmtQty(po.receivedQty)}/${fmtQty(po.totalQty)}</span></div></td>
+              <td><div class="actions">${['draft', 'ordered'].includes(po.status) ? '<span class="badge blue">open</span>' : ''}</div></td>
+            </tr>`)
+            .join('');
+    $$('#pobody tr[data-id]').forEach((tr) => (tr.onclick = () => poDetail(Number(tr.dataset.id))));
+  }
+
+  async function poDetail(id) {
+    const po = await api('/purchase-orders/' + id);
+    openModal(
+      modalShell(`Purchase Order #${po.code}`,
+        `<p class="muted small" style="margin-top:0">Supplier: <strong>${esc(po.supplierName)}</strong> · Status: <strong>${po.status}</strong> · Expected: ${po.expected_date ? esc(po.expected_date.slice(0, 10)) : '—'}</p>
+         <table class="tbl"><thead><tr><th>Product</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Accepted</th><th class="num">Rejected</th><th class="num">Unit Cost</th></tr></thead>
+         <tbody>${po.items.map((i) => `<tr>
+           <td>${esc(i.emoji)} ${esc(i.productName)}</td>
+           <td class="num">${fmtQty(i.qty)}</td>
+           <td class="num">${fmtQty(i.qty_received)}</td>
+           <td class="num" style="color:var(--green)">${fmtQty(i.qty_accepted)}</td>
+           <td class="num" style="color:${i.qty_rejected ? 'var(--red)' : 'inherit'}">${fmtQty(i.qty_rejected)}</td>
+           <td class="num">${money(i.unit_cost_cents)}</td></tr>`).join('')}</tbody></table>`,
+        `${po.status === 'draft' ? '<button class="btn primary" id="po-order">📤 Submit to Supplier</button>' : ''}
+         ${['ordered', 'receiving'].includes(po.status) ? '<button class="btn primary" id="po-receive">📥 Receive Goods</button>' : ''}
+         ${['draft', 'ordered'].includes(po.status) ? '<button class="btn danger" id="po-cancel">✕ Cancel PO</button>' : ''}
+         <button class="btn" data-close>Close</button>`),
+      true);
+    bindModalClose($('#modal-content'));
+    $('#po-order').onclick = async () => {
+      await api(`/purchase-orders/${id}/order`, { method: 'POST' });
+      toast('PO submitted to supplier');
+      closeModal();
+      load();
+    };
+    $('#po-cancel').onclick = async () => {
+      if (!confirm('Cancel this purchase order?')) return;
+      await api(`/purchase-orders/${id}/cancel`, { method: 'POST' });
+      toast('PO cancelled');
+      closeModal();
+      load();
+    };
+    $('#po-receive')?.addEventListener('click', () => receiveForm(po));
+  }
+
+  async function receiveForm(po) {
+    openModal(
+      modalShell(`Receive Goods · #${po.code}`,
+        `<form id="rcv">
+          <p class="muted small" style="margin-top:0">Enter what actually arrived. Quality scores drive the batch grade automatically (A ≥ 84%, B ≥ 60%).</p>
+          ${po.items.map((i) => `
+            <div class="card mb" style="padding:12px">
+              <strong>${esc(i.emoji)} ${esc(i.productName)}</strong> <span class="muted small">ordered ${fmtQty(i.qty)} ${esc(i.unit)}</span>
+              <div class="form-cols-3 mt" style="margin-top:8px">
+                <div class="form-row"><label>Accepted qty</label><input name="acc-${i.id}" type="number" step="any" min="0" value="${Math.max(i.qty - i.qty_received, 0)}" class="field"></div>
+                <div class="form-row"><label>Rejected qty</label><input name="rej-${i.id}" type="number" step="any" min="0" value="0" class="field"></div>
+                <div class="form-row"><label>Pulp temp °C</label><input name="temp-${i.id}" type="number" step="0.1" class="field" placeholder="optional"></div>
+              </div>
+              <div class="form-cols-4" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+                ${[['appearance', 'Appear'], ['firmness', 'Firm'], ['ripeness', 'Ripe'], ['damage', 'Damage']].map(([n, l]) => `
+                  <div class="form-row"><label>${l} (1-5)</label><input name="${n}-${i.id}" type="number" min="1" max="5" value="${n === 'damage' ? 2 : 4}" class="field"></div>`).join('')}
+              </div>
+              <div class="form-row"><label>Line notes</label><input name="note-${i.id}" class="field" placeholder="Condition remarks"></div>
+            </div>`).join('')}
+          <div class="form-row"><label>Inspector</label><input name="inspector" class="field" value="Receiving Bay 1"></div>
+        </form>`,
+        `<button class="btn" data-close>Cancel</button><button class="btn primary" id="rcv-go">📥 Create Batches</button>`),
+      true);
+    bindModalClose($('#modal-content'));
+    $('#rcv-go').onclick = async () => {
+      const f = new FormData($('#rcv'));
+      const lines = po.items.map((i) => ({
+        itemId: i.id,
+        acceptedQty: parseFloat(f.get(`acc-${i.id}`)) || 0,
+        rejectedQty: parseFloat(f.get(`rej-${i.id}`)) || 0,
+        tempC: f.get(`temp-${i.id}`) ? parseFloat(f.get(`temp-${i.id}`)) : null,
+        appearance: +f.get(`appearance-${i.id}`),
+        firmness: +f.get(`firmness-${i.id}`),
+        ripeness: +f.get(`ripeness-${i.id}`),
+        damage: +f.get(`damage-${i.id}`),
+        notes: f.get(`note-${i.id}`) || '',
+      })).filter((l) => l.acceptedQty + l.rejectedQty > 0);
+      if (!lines.length) return toast('Nothing to receive', true);
+      try {
+        const r = await api(`/purchase-orders/${po.id}/receive`, {
+          method: 'POST',
+          body: JSON.stringify({ lines, inspector: f.get('inspector') }),
+        });
+        closeModal();
+        toast(r.completed ? `Received ✓ batches created: ${r.batchesCreated.join(', ')}` : 'Partially received');
+        route();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  }
+
+  async function newPOForm() {
+    const [sups, prods] = await Promise.all([api('/suppliers'), api('/products?active=all')]);
+    let lineNo = 0;
+    const renderLines = () => {
+      $('#po-lines').innerHTML = poLines
+        .map(
+          (l, idx) => `<div class="flex mb" data-ln="${idx}">
+            <select class="field grow" data-f="productId">
+              <option value="">Select produce…</option>
+              ${prods.map((p) => `<option value="${p.id}" ${l.productId === p.id ? 'selected' : ''}>${esc(p.emoji)} ${esc(p.name)} (${esc(p.unit)})</option>`).join('')}
+            </select>
+            <input class="field" style="width:110px" type="number" step="any" min="0" placeholder="Qty" data-f="qty" value="${l.qty ?? ''}">
+            <input class="field" style="width:130px" type="number" step="0.01" min="0" placeholder="Unit cost $" data-f="cost" value="${l.cost ?? ''}">
+            <button type="button" class="btn sm danger" data-rm="${idx}">✕</button>
+          </div>`
+        )
+        .join('');
+      $$('#po-lines select,#po-lines input').forEach((inp) =>
+        (inp.onchange = () => {
+          const idx = Number(inp.closest('[data-ln]').dataset.ln);
+          poLines[idx][inp.dataset.f] = inp.value;
+          if (inp.dataset.f === 'productId' && !poLines[idx].cost) {
+            const p = prods.find((x) => x.id === Number(inp.value));
+            if (p) {
+              poLines[idx].cost = (p.costCents / 100).toFixed(2);
+              renderLines();
+            }
+          }
+        })
+      );
+      $$('#po-lines [data-rm]').forEach((b) => (b.onclick = () => {
+        poLines.splice(Number(b.dataset.rm), 1);
+        renderLines();
+      }));
+    };
+    openModal(
+      modalShell('New Purchase Order',
+        `<form id="npof">
+          <div class="form-cols">
+            <div class="form-row"><label>Supplier *</label><select name="supplierId" class="field">
+              ${sups.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}
+            </select></div>
+            <div class="form-row"><label>Expected delivery</label><input name="expectedDate" type="date" class="field" value="${new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10)}"></div>
+          </div>
+          <label style="font-size:13px;font-weight:600;color:var(--muted)">Items</label>
+          <div id="po-lines"></div>
+          <button type="button" class="btn sm" id="add-line">＋ Add item</button>
+          <div class="form-row mt"><label>Notes</label><input name="notes" class="field"></div>
+        </form>`,
+        `<button class="btn" data-close>Cancel</button><button class="btn primary" id="npof-save">Create Draft PO</button>`),
+      true);
+    const poLines = [{ productId: '', qty: '', cost: '' }];
+    bindModalClose($('#modal-content'));
+    renderLines();
+    $('#add-line').onclick = () => {
+      poLines.push({ productId: '', qty: '', cost: '' });
+      renderLines();
+    };
+    $('#npof-save').onclick = async () => {
+      const f = new FormData($('#npof'));
+      try {
+        await api('/purchase-orders', {
+          method: 'POST',
+          body: JSON.stringify({
+            supplierId: Number(f.get('supplierId')),
+            expectedDate: f.get('expectedDate') || null,
+            notes: f.get('notes'),
+            items: poLines.filter((l) => l.productId && l.qty > 0).map((l) => ({
+              productId: Number(l.productId),
+              qty: parseFloat(l.qty),
+              unitCostCents: Math.round(parseFloat(l.cost || 0) * 100),
+            })),
+          }),
+        });
+        closeModal();
+        toast('Draft purchase order created');
+        load();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  }
+
+  $('#new-po').onclick = () => newPOForm();
+  await load();
+}];
+
+ROUTES.waste = ['Waste & Spoilage', async (el) => {
+  el.innerHTML = `
+    <div class="toolbar">
+      <div class="chips" id="w-range">
+        <button class="chip active" data-days="7">7 days</button>
+        <button class="chip" data-days="30">30 days</button>
+        <button class="chip" data-days="90">90 days</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn primary" id="rec-waste">＋ Record Waste / Spoilage</button>
+    </div>
+    <div id="w-body"></div>`;
+
+  let days = 7;
+  async function load() {
+    const [a, list] = await Promise.all([
+      api('/waste/analytics?days=' + days),
+      api('/waste?days=' + days),
+    ]);
+    const topReason = a.byReason[0]?.reason?.replace(/_/g, ' ');
+    $('#w-body').innerHTML = `
+      <div class="grid-cards">
+        <div class="card stat"><div class="stat-label">Waste Value (${days}d)</div><div class="stat-value" style="color:var(--red)">${money(a.wasteValueCents)}</div><div class="stat-sub">${a.events} events · ${fmtQty(a.totalQty)} units</div></div>
+        <div class="card stat"><div class="stat-label">% of Purchases</div><div class="stat-value">${a.wastePctOfPurchases != null ? a.wastePctOfPurchases + '%' : '—'}</div><div class="stat-sub">purchases ${money(a.purchaseValueCents)}</div></div>
+        <div class="card stat"><div class="stat-label">Top Cause</div><div class="stat-value" style="font-size:20px;text-transform:capitalize">${topReason || '—'}</div><div class="stat-sub">${a.byReason[0] ? money(a.byReason[0].valueCents) : ''}</div></div>
+        <div class="card stat"><div class="stat-label">Top Product</div><div class="stat-value" style="font-size:20px">${a.byProduct[0] ? esc(a.byProduct[0].emoji) + ' ' + esc(a.byProduct[0].productName) : '—'}</div><div class="stat-sub">${a.byProduct[0] ? money(a.byProduct[0].valueCents) : ''}</div></div>
+      </div>
+      <div class="dash-grid mt">
+        <div class="card"><h2>Waste by Cause</h2>
+          ${a.byReason.length === 0 ? '<p class="muted">No waste recorded 🎉</p>' : a.byReason.map((r) => `
+            <div class="mb"><div class="flex small"><span style="text-transform:capitalize">${r.reason.replace(/_/g, ' ')}</span><span class="grow"></span><strong>${money(r.valueCents)}</strong></div>
+            <div class="bar-cell" style="margin-top:6px"><div class="bar-track"><div class="bar-fill" style="background:var(--red);width:${Math.max(2, (r.valueCents / a.wasteValueCents) * 100)}%"></div></div></div></div>`).join('')}
+        </div>
+        <div class="card"><h2>Worst Products & Suppliers</h2>
+          ${a.byProduct.slice(0, 5).map((p) => `<div class="alert-list" style="border:none"><li><span>${esc(p.emoji)}</span><div class="al-name">${esc(p.productName)}<div class="al-sub">${fmtQty(p.qty)} ${esc(p.unit)} lost</div></div><strong>${money(p.valueCents)}</strong></li></div>`).join('') || ''}
+          <hr style="border:none;border-top:1px dashed var(--line);margin:10px 0">
+          ${(a.bySupplier || []).slice(0, 4).map((s) => `<div class="flex small mb"><span>🚚 ${esc(s.supplierName)}</span><span class="grow"></span><strong style="color:var(--red)">${money(s.valueCents)}</strong></div>`).join('')}
+        </div>
+      </div>
+      <div class="mt"><table class="tbl"><thead><tr><th>When</th><th>Product</th><th>Batch</th><th class="num">Qty</th><th class="num">Value</th><th>Cause</th><th>Note</th></tr></thead>
+        <tbody>${list.length === 0 ? '<tr><td colspan="7" class="muted">Nothing wasted in this period.</td></tr>' : list.map((w) => `<tr>
+          <td class="muted small">${fmtDate(w.created_at)}</td>
+          <td><strong>${esc(w.emoji)} ${esc(w.productName)}</strong></td>
+          <td>${w.batch_id ? '#' + w.batch_id : '—'}</td>
+          <td class="num">${fmtQty(w.qty)} ${esc(w.unit)}</td>
+          <td class="num" style="color:var(--red)">${money(w.value_cents)}</td>
+          <td><span class="badge red">${esc(w.reason.replace(/_/g, ' '))}</span></td>
+          <td class="muted small">${esc(w.note || '')}</td></tr>`).join('')}</tbody></table></div>`;
+  }
+
+  $('#w-range').addEventListener('click', (e) => {
+    const ch = e.target.closest('[data-days]');
+    if (!ch) return;
+    days = Number(ch.dataset.days);
+    $$('#w-range .chip').forEach((c) => c.classList.toggle('active', c === ch));
+    load();
+  });
+
+  $('#rec-waste').onclick = async () => {
+    const batches = await api('/batches');
+    if (!batches.length) return toast('No open batches to dispose from', true);
+    openModal(
+      modalShell('Record Waste / Spoilage',
+        `<form id="wf">
+          <div class="form-row"><label>Batch *</label><select name="batchId" class="field" required>
+            ${batches.map((b) => `<option value="${b.id}">${esc(b.emoji)} ${esc(b.productName)} · ${esc(b.code)} (${fmtQty(b.qty_remaining)} ${esc(b.unit)}, exp ${esc(b.expiry_date.slice(0, 10))})</option>`).join('')}
+          </select></div>
+          <div class="form-cols">
+            <div class="form-row"><label>Quantity *</label><input name="qty" type="number" step="any" min="0.01" class="field" required></div>
+            <div class="form-row"><label>Cause</label><select name="reason" class="field">
+              ${(await api('/meta/waste-reasons')).map((r) => `<option value="${r}">${r.replace(/_/g, ' ')}</option>`).join('')}
+            </select></div>
+          </div>
+          <div class="form-row"><label>Note</label><input name="note" class="field"></div>
+        </form>`,
+        `<button class="btn" data-close>Cancel</button><button class="btn danger" id="wf-go">Record Waste</button>`));
+    bindModalClose($('#modal-content'));
+    $('#wf-go').onclick = async () => {
+      const f = new FormData($('#wf'));
+      try {
+        await api(`/batches/${f.get('batchId')}/dispose`, {
+          method: 'POST',
+          body: JSON.stringify({ qty: parseFloat(f.get('qty')), reason: f.get('reason'), note: f.get('note') }),
+        });
+        closeModal();
+        toast('Waste recorded');
+        load();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  };
+
+  await load();
+}];
+
+ROUTES.subscriptions = ['Subscriptions', async (el) => {
+  el.innerHTML = `
+    <div class="toolbar">
+      <button class="btn" id="run-due">▶ Run Due Orders</button>
+      <div class="spacer"></div>
+      <button class="btn primary" id="new-sub">＋ New Subscription</button>
+    </div>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Title</th><th>Customer</th><th>Box contents</th><th>Every</th><th>Next run</th><th class="num">Est. Price</th><th>Status</th><th class="right">Actions</th></tr></thead>
+      <tbody id="subbody"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+    </table></div>`;
+
+  async function load() {
+    const rows = await api('/subscriptions');
+    $('#subbody').innerHTML =
+      rows.length === 0
+        ? '<tr><td colspan="8" class="empty"><span class="big">🔁</span>No subscriptions yet.</td></tr>'
+        : rows
+            .map((s) => `<tr>
+              <td><strong>${esc(s.title)}</strong></td>
+              <td>${esc(s.customerName)}</td>
+              <td class="small muted">${s.items.map((i) => `${esc(i.emoji)}${fmtQty(i.qty)}${esc(i.unit)}`).join(' · ')}</td>
+              <td>${s.freq_days}d</td>
+              <td>${esc(s.next_run)}</td>
+              <td class="num">${money(s.estPriceCents)}</td>
+              <td>${s.active ? '<span class="badge green">Active</span>' : '<span class="badge gray">Paused</span>'}</td>
+              <td><div class="actions"><button class="btn xs" data-tgl="${s.id}">${s.active ? 'Pause' : 'Resume'}</button></div></td>
+            </tr>`)
+            .join('');
+    $$('#subbody [data-tgl]').forEach((b) =>
+      (b.onclick = async () => {
+        await api(`/subscriptions/${b.dataset.tgl}/toggle`, { method: 'POST' });
+        load();
+      })
+    );
+  }
+
+  $('#run-due').onclick = async () => {
+    const r = await api('/subscriptions/run-due', { method: 'POST' });
+    if (r.generated.length)
+      toast(`Generated ${r.generated.length} order(s): ${r.generated.map((g) => '#' + g.orderId).join(', ')}`);
+    else toast('Nothing due today');
+    r.errors.forEach((e) => toast(`Sub #${e.subscriptionId}: ${e.error}`, true));
+    load();
+  };
+
+  $('#new-sub').onclick = async () => {
+    const [custs, prods] = await Promise.all([api('/customers'), api('/products')]);
+    const lines = [{ productId: prods[0]?.id || '', qty: 1 }];
+    const renderLines = () => {
+      $('#sub-lines').innerHTML = lines
+        .map(
+          (l, idx) => `<div class="flex mb" data-ln="${idx}">
+            <select class="field grow" data-f="productId">
+              ${prods.map((p) => `<option value="${p.id}" ${Number(l.productId) === p.id ? 'selected' : ''}>${esc(p.emoji)} ${esc(p.name)} (${esc(p.unit)})</option>`).join('')}
+            </select>
+            <input class="field" style="width:100px" type="number" step="any" min="0.01" data-f="qty" value="${l.qty}">
+            <button type="button" class="btn sm danger" data-rm="${idx}">✕</button>
+          </div>`
+        )
+        .join('');
+      $$('#sub-lines select, #sub-lines input').forEach((inp) =>
+        (inp.onchange = () => (lines[Number(inp.closest('[data-ln]').dataset.ln)][inp.dataset.f] = inp.value))
+      );
+      $$('#sub-lines [data-rm]').forEach((b) => (b.onclick = () => {
+        lines.splice(Number(b.dataset.rm), 1);
+        renderLines();
+      }));
+    };
+    openModal(
+      modalShell('New Subscription Box',
+        `<form id="nsf">
+          <div class="form-cols">
+            <div class="form-row"><label>Customer *</label><select name="customerId" class="field">
+              ${custs.map((c) => `<option value="${c.id}">${esc(c.name)} (${esc(c.segment)})</option>`).join('')}
+            </select></div>
+            <div class="form-row"><label>Title *</label><input name="title" class="field" required placeholder="Weekly Veggie Box"></div>
+          </div>
+          <div class="form-cols">
+            <div class="form-row"><label>Every (days)</label><input name="freqDays" type="number" min="1" max="90" value="7" class="field"></div>
+            <div class="form-row"><label>First delivery</label><input name="nextRun" type="date" class="field" value="${new Date(Date.now() + 86400000).toISOString().slice(0, 10)}"></div>
+          </div>
+          <label style="font-size:13px;font-weight:600;color:var(--muted)">Box contents</label>
+          <div id="sub-lines"></div>
+          <button type="button" class="btn sm" id="add-line">＋ Add produce</button>
+        </form>`,
+        `<button class="btn" data-close>Cancel</button><button class="btn primary" id="nsf-save">Create</button>`));
+    bindModalClose($('#modal-content'));
+    renderLines();
+    $('#add-line').onclick = () => {
+      lines.push({ productId: prods[0]?.id, qty: 1 });
+      renderLines();
+    };
+    $('#nsf-save').onclick = async () => {
+      const f = new FormData($('#nsf'));
+      try {
+        await api('/subscriptions', {
+          method: 'POST',
+          body: JSON.stringify({
+            customerId: Number(f.get('customerId')),
+            title: f.get('title'),
+            freqDays: parseInt(f.get('freqDays'), 10),
+            nextRun: f.get('nextRun'),
+            items: lines.map((l) => ({ productId: Number(l.productId), qty: parseFloat(l.qty) })).filter((l) => l.productId && l.qty > 0),
+          }),
+        });
+        closeModal();
+        toast('Subscription created');
+        load();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  };
+
+  await load();
+}];
+
+ROUTES.finance = ['Receivables', async (el) => {
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  const r = await api('/finance/receivables');
+  el.innerHTML = `
+    <div class="grid-cards">
+      <div class="card stat"><div class="stat-label">Total Receivable</div><div class="stat-value">${money(r.totalReceivableCents)}</div><div class="stat-sub">${r.invoices.length} open invoice(s)</div></div>
+      <div class="card stat"><div class="stat-label">Overdue</div><div class="stat-value" style="color:${r.overdueCents ? 'var(--red)' : 'var(--green)'}">${money(r.overdueCents)}</div><div class="stat-sub">past due date</div></div>
+    </div>
+    <div class="tbl-wrap mt"><table class="tbl">
+      <thead><tr><th>Order</th><th>Date</th><th>Customer</th><th>Due</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th><th class="right">Action</th></tr></thead>
+      <tbody>${r.invoices.length === 0 ? '<tr><td colspan="8" class="empty"><span class="big">💰</span>All invoices settled.</td></tr>'
+        : r.invoices.map((i) => `<tr>
+            <td><a href="#/orders" onclick="location.hash='/orders'" style="text-decoration:none;color:var(--ink)">#${i.id}</a></td>
+            <td class="muted">${esc(i.createdAt.slice(0, 10))}</td>
+            <td><strong>${esc(i.customerName)}</strong></td>
+            <td class="muted">${esc((i.dueDate || '').slice(0, 10))} ${i.overdue ? '<span class="badge red">overdue</span>' : ''}</td>
+            <td class="num">${money(i.totalCents)}</td>
+            <td class="num" style="color:var(--green)">${money(i.paidCents)}</td>
+            <td class="num"><strong>${money(i.balanceCents)}</strong></td>
+            <td><div class="actions"><button class="btn xs" data-pay="${i.id}" data-bal="${i.balanceCents}">💵 Payment</button></div></td></tr>`).join('')}</tbody>
+    </table></div>`;
+  $$('#view [data-pay]').forEach((b) =>
+    (b.onclick = async () => {
+      const sale = await api('/sales/' + b.dataset.pay);
+      paymentForm(sale);
+    })
+  );
+}];
+
+ROUTES.insights = ['AI Insights', async (el) => {
+  el.innerHTML = '<div class="empty"><span class="big">🤖</span>Analyzing your business…</div>';
+  const [brief, perish, procure] = await Promise.all([
+    api('/agents/executive-brief'),
+    api('/agents/perishability'),
+    api('/agents/procurement'),
+  ]);
+
+  const actionBadge = (a) => ({ dispose: 'red', discount: 'amber', bundle: 'blue', monitor: 'gray' }[a] || 'gray');
+
+  el.innerHTML = `
+    <div class="card mb"><div class="card-head"><h2>🎯 Executive Brief</h2><span class="muted small">${new Date(brief.generatedAt).toLocaleTimeString()}</span></div>
+      <div class="grid-cards">
+        <div class="stat"><div class="stat-label">Today vs 7d avg</div><div class="stat-value" style="font-size:20px">${money(brief.todayRevenueCents)}</div><div class="stat-sub">avg day ${money(brief.weekAvgDailyCents)}</div></div>
+        <div class="stat"><div class="stat-label">Receivables outstanding</div><div class="stat-value" style="font-size:20px">${money(brief.receivableCents)}</div></div>
+        <div class="stat"><div class="stat-label">Urgent batches</div><div class="stat-value" style="font-size:20px;color:${brief.urgentBatches.length ? 'var(--amber)' : 'var(--green)'}">${brief.urgentBatches.length}</div></div>
+        <div class="stat"><div class="stat-label">Low stock items</div><div class="stat-value" style="font-size:20px">${brief.lowStock.length}</div></div>
+      </div>
+      <ul class="alert-list mt">
+        ${brief.recommendedActions.map((a) => `<li><span>💡</span><div class="al-name" style="font-weight:500">${esc(a)}</div></li>`).join('') || '<li><span>✅</span><div class="al-name">All clear — no pressing issues detected.</div></li>'}
+      </ul>
+      ${brief.coldChainBreaches.map((z) => `<div class="card mt" style="border-left:4px solid var(--red);padding:10px 14px">❄️ <strong>${esc(z.name)}</strong>: ${z.lastTemp}°C (limits ${z.min_temp}…${z.max_temp}°C) — inspect and correct immediately.</div>`).join('')}
+    </div>
+
+    <div class="card mb"><div class="card-head"><h2>⏳ Perishability Agent</h2><span class="muted small">${perish.recommendations.length} batch(es) need attention</span></div>
+      ${perish.recommendations.length === 0 ? '<p class="muted">No batches approaching expiry. Great freshness control!</p>' : `
+      <table class="tbl"><thead><tr><th>Batch</th><th>Product</th><th class="num">Remaining</th><th>Expiry</th><th>Recommended Action</th><th class="right">Apply</th></tr></thead>
+      <tbody>${perish.recommendations.map((r) => `<tr>
+        <td><span class="badge blue">${esc(r.code)}</span></td>
+        <td>${esc(r.emoji)} <strong>${esc(r.productName)}</strong></td>
+        <td class="num">${fmtQty(r.qtyRemaining)} ${esc(r.unit)}</td>
+        <td class="muted">${esc(r.expiryDate.slice(0, 10))} (${r.daysLeft < 0 ? -r.daysLeft + 'd over' : r.daysLeft + 'd'})</td>
+        <td><span class="badge ${actionBadge(r.action)}" style="text-transform:capitalize">${esc(r.action)}</span>
+            <span class="small muted"> ${esc(r.rationale)}</span></td>
+        <td><div class="actions">
+          ${r.action === 'discount' ? `<button class="btn xs" data-disc="${r.batchId}" data-pct="${r.suggestedDiscountPct}">-${r.suggestedDiscountPct}%</button>` : ''}
+          ${r.action === 'dispose' ? `<button class="btn xs danger" data-disp="${r.batchId}" data-code="${esc(r.code)}" data-qty="${r.qtyRemaining}">Dispose</button>` : ''}
+          ${r.action === 'bundle' ? `<span class="muted small">suggest promo</span>` : ''}
+        </div></td></tr>`).join('')}</tbody></table>`}
+    </div>
+
+    <div class="card"><div class="card-head"><h2>📋 Procurement Agent</h2><span class="muted small">${procure.suggestions.length} suggestion(s)</span></div>
+      ${procure.suggestions.length === 0 ? '<p class="muted">Stock levels are healthy across the catalog.</p>' : `
+      <table class="tbl"><thead><tr><th>Product</th><th class="num">Stock</th><th class="num">Reorder at</th><th class="num">Suggested Qty</th><th>Driver</th><th class="right">Action</th></tr></thead>
+      <tbody>${procure.suggestions.map((s) => `<tr>
+        <td>${esc(s.emoji)} <strong>${esc(s.productName)}</strong></td>
+        <td class="num">${fmtQty(s.stockQty)}</td>
+        <td class="num muted">${fmtQty(s.reorderLevel)}</td>
+        <td class="num"><strong>+${fmtQty(s.suggestQty)} ${esc(s.unit)}</strong></td>
+        <td class="small muted">${esc(s.reason)}</td>
+        <td><div class="actions"><button class="btn xs primary" data-po='${esc(JSON.stringify(s))}'>Draft PO</button></div></td></tr>`).join('')}</tbody></table>`}
+    </div>`;
+
+  $$('#view [data-disc]').forEach((b) =>
+    (b.onclick = async () => {
+      await api(`/batches/${b.dataset.disc}/discount`, { method: 'POST', body: JSON.stringify({ discountPct: Number(b.dataset.pct) }) });
+      toast(`Markdown applied (-${b.dataset.pct}%)`);
+      route();
+    })
+  );
+  $$('#view [data-disp]').forEach((b) =>
+    (b.onclick = async () => {
+      if (!confirm(`Dispose all of batch ${b.dataset.code}?`)) return;
+      try {
+        await api(`/batches/${b.dataset.disp}/dispose`, { method: 'POST', body: JSON.stringify({ qty: parseFloat(b.dataset.qty), reason: 'expired', note: 'AI recommendation' }) });
+        toast('Disposed & recorded as waste');
+        route();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    })
+  );
+  $$('#view [data-po]').forEach((b) =>
+    (b.onclick = async () => {
+      const s = JSON.parse(b.dataset.po);
+      if (!s.supplierId) return toast('No supplier linked to this product — set one first', true);
+      try {
+        await api('/purchase-orders', {
+          method: 'POST',
+          body: JSON.stringify({
+            supplierId: s.supplierId,
+            expectedDate: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
+            notes: 'Auto-drafted by Procurement Agent',
+            items: [{ productId: s.productId, qty: s.suggestQty, unitCostCents: s.unitCostCents }],
+          }),
+        });
+        toast(`Draft PO created for ${s.productName}`);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    })
+  );
 }];
 
 function settingsModal() {

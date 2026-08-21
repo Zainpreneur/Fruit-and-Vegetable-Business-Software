@@ -4,7 +4,7 @@ import { sendJSON, bad, readJSON } from '../util.js';
 export function registerPeopleRoutes(router) {
   router.get('/customers', ({ res }) => {
     const rows = db.prepare(`
-      SELECT c.id, c.name, c.phone, c.email, c.notes, c.created_at AS createdAt,
+      SELECT c.id, c.name, c.phone, c.email, c.notes, c.segment, c.payment_terms AS paymentTerms, c.created_at AS createdAt,
         (SELECT COUNT(*) FROM sales s WHERE s.customer_id = c.id AND s.status = 'completed') AS orderCount,
         (SELECT COALESCE(SUM(s.total_cents), 0) FROM sales s WHERE s.customer_id = c.id AND s.status = 'completed') AS totalSpentCents
       FROM customers c ORDER BY totalSpentCents DESC, c.name`).all();
@@ -14,16 +14,20 @@ export function registerPeopleRoutes(router) {
   router.post('/customers', async ({ req, res }) => {
     const b = await readJSON(req);
     if (!b.name?.trim()) return bad(res, 'Customer name is required');
-    const r = db.prepare('INSERT INTO customers (name, phone, email, notes, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(b.name.trim(), b.phone || '', b.email || '', b.notes || '', new Date().toISOString());
+    const r = db.prepare('INSERT INTO customers (name, phone, email, notes, segment, payment_terms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(b.name.trim(), b.phone || '', b.email || '', b.notes || '',
+        ['retail', 'restaurant', 'hotel', 'cafe', 'caterer', 'reseller', 'corporate', 'wholesale'].includes(b.segment) ? b.segment : 'retail',
+        (b.payment_terms || '').slice(0, 20), new Date().toISOString());
     sendJSON(res, 201, { id: Number(r.lastInsertRowid) });
   });
 
   router.put('/customers/:id', async ({ req, res, params }) => {
     const b = await readJSON(req);
     if (!b.name?.trim()) return bad(res, 'Customer name is required');
-    const r = db.prepare('UPDATE customers SET name = ?, phone = ?, email = ?, notes = ? WHERE id = ?')
-      .run(b.name.trim(), b.phone || '', b.email || '', b.notes || '', params.id);
+    const r = db.prepare('UPDATE customers SET name = ?, phone = ?, email = ?, notes = ?, segment = ?, payment_terms = ? WHERE id = ?')
+      .run(b.name.trim(), b.phone || '', b.email || '', b.notes || '',
+        ['retail', 'restaurant', 'hotel', 'cafe', 'caterer', 'reseller', 'corporate', 'wholesale'].includes(b.segment) ? b.segment : 'retail',
+        (b.payment_terms || '').slice(0, 20), params.id);
     if (!r.changes) return bad(res, 'Customer not found', 404);
     sendJSON(res, 200, { ok: true });
   });
