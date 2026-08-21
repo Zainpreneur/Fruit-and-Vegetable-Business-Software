@@ -98,20 +98,26 @@ export function registerPurchasingRoutes(router) {
     const now = new Date().toISOString();
     const created = [];
 
-    db.exec('BEGIN');
-    try {
-      for (const ln of lines) {
-        const item = byId[ln.itemId];
-        if (!item) return bad(res, `Unknown PO line ${ln.itemId}`);
-        const accepted = Math.max(num(ln.acceptedQty) || 0, 0);
-        const rejected = Math.max(num(ln.rejectedQty) || 0, 0);
-        const arrived = accepted + rejected;
-        if (arrived <= 0) continue;
-        const remaining = item.qty - item.qty_received;
-        if (arrived > remaining + item.qty * 0.1 + 1e-9) {
-          return bad(res, `Line ${item.product_id}: arrived ${arrived} exceeds ordered remaining (${remaining})`);
-        }
+    const plan = [];
+    for (const ln of lines) {
+      const item = byId[ln.itemId];
+      if (!item) return bad(res, `Unknown PO line ${ln.itemId}`);
+      const accepted = Math.max(num(ln.acceptedQty) || 0, 0);
+      const rejected = Math.max(num(ln.rejectedQty) || 0, 0);
+      const arrived = accepted + rejected;
+      if (arrived <= 0) continue;
+      const remaining = item.qty - item.qty_received;
+      if (arrived > remaining + item.qty * 0.1 + 1e-9) {
+        return bad(res, `Line ${item.product_id}: arrived ${arrived} exceeds ordered remaining (${remaining})`);
+      }
+      plan.push({ item, accepted, rejected, ln });
+    }
 
+    db.exec('BEGIN');
+    let done = false;
+    try {
+      for (const { item, accepted, rejected, ln } of plan) {
+        const arrived = accepted + rejected;
         const score = (v) => Math.min(Math.max(Math.round(num(v)) || 3, 1), 5);
         const appearance = score(ln.appearance ?? 4);
         const firmness = score(ln.firmness ?? 4);
@@ -147,7 +153,7 @@ export function registerPurchasingRoutes(router) {
       }
 
       const after = db.prepare('SELECT COUNT(*) AS open FROM po_items WHERE po_id = ? AND qty_received < qty * 0.999').get(params.id).open;
-      const done = after === 0;
+      done = after === 0;
       db.prepare('UPDATE purchase_orders SET status = ?, received_at = ? WHERE id = ?')
         .run(done ? 'completed' : 'receiving', done ? now : po.received_at, params.id);
       db.exec('COMMIT');
@@ -155,7 +161,7 @@ export function registerPurchasingRoutes(router) {
       db.exec('ROLLBACK');
       throw e;
     }
-    sendJSON(res, 200, { ok: true, batchesCreated: created, completed: true });
+    sendJSON(res, 200, { ok: true, batchesCreated: created, completed: done });
   });
 
   router.get('/suppliers/:id/performance', ({ res, params }) => {
@@ -164,7 +170,7 @@ export function registerPurchasingRoutes(router) {
     const deliveries = db.prepare("SELECT COUNT(*) AS c FROM purchase_orders WHERE supplier_id = ? AND status = 'completed'").get(params.id).c;
     const onTimeRow = db.prepare(`
       SELECT COUNT(*) AS c FROM purchase_orders
-      WHERE supplier_id = ? AND status='completed' AND received_at IS NOT NULL AND expected_date IS NOT NULL AND received_at <= expected_date`).get(params.id).c;
+      WHERE supplier_id = ? AND status='completed' AND received_at IS NOT NULL AND expected_date IS NOT NULL AND date(received_at) <= expected_date`).get(params.id).c;
     const vals = db.prepare(`
       SELECT COALESCE(SUM(qty_accepted),0) AS acc, COALESCE(SUM(qty_rejected),0) AS rej, COALESCE(SUM(qty_accepted * unit_cost_cents),0) AS valueCents
       FROM po_items poi JOIN purchase_orders po ON po.id = poi.po_id

@@ -21,8 +21,11 @@ export function createSale({ items, customerId = null, discountPct = 0, paymentM
     if (!product.active) throw Object.assign(new Error(`${product.name} is no longer available`), { status: 400 });
     if (!Number.isFinite(qty) || qty <= 0) throw Object.assign(new Error(`Invalid quantity for ${product.name}`), { status: 400 });
     const { picks, shortfall } = allocateFEFO(product.id, qty);
-    if (shortfall > 1e-9 && picks.length === 0) {
-      throw Object.assign(new Error(`Insufficient stock for ${product.name}`), { status: 400 });
+    if (shortfall > 1e-9) {
+      throw Object.assign(
+        new Error(picks.length ? `Insufficient stock for ${product.name} (only ${(qty - shortfall).toFixed(2)} available)` : `Insufficient stock for ${product.name}`),
+        { status: 400 }
+      );
     }
     const refPrice = refPriceFor(product, channel);
     let lineTotal = 0;

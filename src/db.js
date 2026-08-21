@@ -482,6 +482,7 @@ function ensureOpsSeed() {
       'Green Valley Farms', iso(now - DAY * 5), iso(now - DAY * 5), iso(now - DAY),
       zoneByType['chilled'] || null, 'B', 4, 4, spinach.cost_cents, iso(now - DAY * 5)
     );
+    db.prepare('UPDATE products SET stock_qty = stock_qty + 4 WHERE id = ?').run(spinach.id);
   }
 
   const grapes = db.prepare("SELECT * FROM products WHERE name = 'Grapes'").get();
@@ -529,6 +530,7 @@ function ensureOpsSeed() {
   insPOI.run(po3, kiwi.id, 30, 95);
   insPOI.run(po3, straw.id, 15, 330);
   const upPOI = db.prepare('UPDATE po_items SET qty_received = ?, qty_accepted = ?, qty_rejected = ? WHERE po_id = ? AND product_id = ?');
+  const addStock = db.prepare('UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?');
 
   bc += 1;
   const rb1 = insBatch.run(
@@ -537,6 +539,7 @@ function ensureOpsSeed() {
     zoneByType['chilled'], 'B', 28, 28, 95, iso(recvAt)
   );
   upPOI.run(30, 28, 2, po3, kiwi.id);
+  addStock.run(28, kiwi.id);
   const insInsp = db.prepare(`INSERT INTO inspections
     (batch_id, inspector, appearance, firmness, ripeness, damage, temp_c, result, accepted_qty, rejected_qty, notes, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -549,6 +552,7 @@ function ensureOpsSeed() {
     zoneByType['chilled'], 'A', 15, 15, 330, iso(recvAt)
   );
   upPOI.run(15, 15, 0, po3, straw.id);
+  addStock.run(15, straw.id);
   insInsp.run(Number(rb2.lastInsertRowid), 'Receiving Bay 1', 5, 5, 5, 5, 3.8, 'pass', 15, 0, 'Excellent condition', iso(recvAt));
 
   console.log('[db] operations data seeded (zones, batches, POs, cold-chain).');

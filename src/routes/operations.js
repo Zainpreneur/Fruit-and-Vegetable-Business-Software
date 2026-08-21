@@ -77,9 +77,10 @@ export function registerOperationsRoutes(router) {
       ? body.grade
       : gradeFromScores(appearance, firmness, ripeness, damage);
     const result = ['pass', 'partial', 'reject', 'quarantine'].includes(body.result) ? body.result : 'pass';
-    const rejectedQty = Math.max(num(body.rejectedQty) || 0, 0);
+    let rejectedQty = Math.max(num(body.rejectedQty) || 0, 0);
     if (Number.isNaN(rejectedQty)) return bad(res, 'Invalid rejected quantity');
     if (rejectedQty > batch.qty_remaining + 1e-9) return bad(res, `Rejected qty exceeds remaining (${batch.qty_remaining})`);
+    if (result === 'reject') rejectedQty = batch.qty_remaining;
 
     db.exec('BEGIN');
     try {

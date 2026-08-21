@@ -77,9 +77,6 @@ export function registerReportRoutes(router) {
     const expSoon = db.prepare(`
       SELECT COUNT(*) AS n, COALESCE(SUM(qty_remaining * unit_cost_cents),0) AS v
       FROM batches WHERE status = 'available' AND expiry_date <= datetime('now', '+3 days')`).get();
-    const urgentCount = db.prepare(`
-      SELECT COUNT(*) AS n FROM batches
-      WHERE status='available' AND expiry_date <= datetime('now', '+2 days')`).get().n;
     const waste7 = db.prepare(`
       SELECT COALESCE(SUM(value_cents),0) AS v FROM waste WHERE created_at >= datetime('now','-7 days')`).get().v;
     const breaches = db.prepare(`SELECT COUNT(*) AS n FROM zones z WHERE z.min_temp IS NOT NULL AND (

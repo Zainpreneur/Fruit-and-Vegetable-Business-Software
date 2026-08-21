@@ -52,7 +52,13 @@ export function registerBillingRoutes(router) {
     if (!existing) return bad(res, 'Subscription not found', 404);
     try {
       const b = await readJSON(req);
-      const v = validateSub({ ...existing, items_json: undefined, ...b, items: b.items ?? JSON.parse(existing.items_json), nextRun: b.nextRun ?? existing.next_run });
+      const v = validateSub({
+        customerId: b.customerId ?? existing.customer_id,
+        title: b.title ?? existing.title,
+        freqDays: b.freqDays ?? existing.freq_days,
+        nextRun: b.nextRun ?? existing.next_run,
+        items: b.items ?? JSON.parse(existing.items_json || '[]'),
+      });
       db.prepare('UPDATE subscriptions SET customer_id=?, title=?, items_json=?, freq_days=?, next_run=? WHERE id=?')
         .run(v.customerId, v.title, JSON.stringify(v.items), v.freqDays, v.nextRun, params.id);
       sendJSON(res, 200, { ok: true });
