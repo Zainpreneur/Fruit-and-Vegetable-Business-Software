@@ -53,12 +53,7 @@ export function createBatch({ product, supplierId = null, poId = null, origin = 
 
 export function allocateFEFO(productId, qty) {
   const now = Date.now();
-  const rows = db.prepare(`
-    SELECT * FROM batches
-    WHERE product_id = ? AND status = 'available' AND qty_remaining > 0
-    ORDER BY expiry_date ASC, id ASC`)
-    .all(productId)
-    .filter((b) => new Date(b.expiry_date).getTime() > now);
+  const rows = pickableBatches(productId, now);
   let need = qty;
   const picks = [];
   for (const b of rows) {
@@ -68,4 +63,26 @@ export function allocateFEFO(productId, qty) {
     need -= take;
   }
   return { picks, shortfall: Math.round(need * 100) / 100 };
+}
+
+function pickableBatches(productId, now) {
+  return db
+    .prepare(`SELECT * FROM batches
+      WHERE product_id = ? AND status = 'available' AND qty_remaining > 0
+      ORDER BY expiry_date ASC, id ASC`)
+    .all(productId)
+    .filter((b) => new Date(b.expiry_date).getTime() > now);
+}
+
+export function consumeFEFO(productId, qty) {
+  const { picks, shortfall } = allocateFEFO(productId, qty);
+  if (shortfall > 1e-9) return { picks, shortfall };
+  const decBatch = db.prepare(
+    `UPDATE batches SET qty_remaining = qty_remaining - ?,
+       status = CASE WHEN qty_remaining - ? <= 0.0001 THEN 'depleted' ELSE status END
+     WHERE id = ?`
+  );
+  for (const p of picks) decBatch.run(p.qty, p.qty, p.batch.id);
+  db.prepare('UPDATE products SET stock_qty = MAX(0, stock_qty - ?) WHERE id = ?').run(qty, productId);
+  return { picks, shortfall: 0 };
 }

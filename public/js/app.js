@@ -264,7 +264,8 @@ function renderPosTiles(products) {
   $$('#pos-tiles [data-add]').forEach((t) =>
     (t.onclick = () => {
       const p = products.find((x) => x.id === Number(t.dataset.add));
-      if (!p || p.stockQty <= 0) return;
+      if (!p) return;
+      if (p.stockQty <= 0) return toast(`${p.name} is out of stock`, true);
       const cur = cart.get(p.id);
       const next = (cur?.qty || 0) + 1;
       if (next > p.stockQty + 1e-9) return toast(`Only ${fmtQty(p.stockQty)} ${p.unit} of ${p.name} left`, true);
@@ -274,16 +275,38 @@ function renderPosTiles(products) {
   );
 }
 
+function cartMath() {
+  const lines = [...cart.values()];
+  const pct = Math.min(Math.max(Number($('#cart-discount')?.value) || 0, 0), 100);
+  const subtotal = lines.reduce((a, l) => a + Math.round(l.qty * l.product.priceCents), 0);
+  const disc = Math.round((subtotal * pct) / 100);
+  const taxRate = Number(settings.taxRate) || 0;
+  const tax = Math.round(((subtotal - disc) * taxRate) / 100);
+  return { lines, pct, subtotal, disc, tax, total: subtotal - disc + tax };
+}
+
+function updateCartSums() {
+  const { subtotal, disc, tax, total } = cartMath();
+  const set = (id, v) => {
+    const n = $('#cart-panel')?.querySelector('#' + id);
+    if (n) n.textContent = money(v);
+  };
+  set('sum-sub', subtotal);
+  set('sum-disc', disc);
+  set('sum-tax', tax);
+  set('sum-total', total);
+  const btn = $('#checkout');
+  if (btn) {
+    btn.disabled = cart.size === 0;
+    btn.textContent = `✓ Complete Sale · ${money(total)}`;
+  }
+}
+
 function renderCartPanel() {
   const panel = $('#cart-panel');
   if (!panel) return;
   const lines = [...cart.values()];
-  const subtotal = lines.reduce((a, l) => a + Math.round(l.qty * l.product.priceCents), 0);
-  const pctEl = $('#cart-discount');
-  const pct = Math.min(Math.max(Number(pctEl?.value) || 0, 0), 100);
-  const disc = Math.round((subtotal * pct) / 100);
-  const tax = Math.round(((subtotal - disc) * settings.taxRate) / 100);
-  const total = subtotal - disc + tax;
+  const { pct, subtotal, disc, tax, total } = cartMath();
 
   panel.innerHTML = `
     <div class="flex"><h2 style="margin:0;font-size:16px" class="grow">🛒 Current Sale</h2>
@@ -296,7 +319,7 @@ function renderCartPanel() {
       <div class="cart-line">
         <div><span class="cl-name">${esc(p.emoji)} ${esc(p.name)}</span><br>
           <span class="cl-price">${money(p.priceCents)} / ${esc(p.unit)}</span></div>
-        <div class="cl-total">${money(Math.round(qty * p.priceCents))}</div>
+        <div class="cl-total" data-lt="${p.id}">${money(Math.round(qty * p.priceCents))}</div>
         <div class="qty-controls">
           <button data-dec="${p.id}">−</button>
           <input type="number" data-qty="${p.id}" value="${qty}" min="0" step="${p.unit === 'kg' ? 0.25 : 1}">
@@ -319,13 +342,15 @@ function renderCartPanel() {
       }</select></div>
     <div class="form-row"><label>Payment</label>
       <select id="cart-pay" class="field">
-        <option value="cash">💵 Cash</option><option value="card">💳 Card</option><option value="mobile">📱 Mobile</option>
+        <option value="cash" ${salePayMethod === 'cash' ? 'selected' : ''}>💵 Cash</option>
+        <option value="card" ${salePayMethod === 'card' ? 'selected' : ''}>💳 Card</option>
+        <option value="mobile" ${salePayMethod === 'mobile' ? 'selected' : ''}>📱 Mobile</option>
       </select></div>
     <div class="cart-sums">
-      <div class="row"><span>Subtotal</span><span>${money(subtotal)}</span></div>
-      <div class="row"><span>Discount</span><span>−${money(disc)}</span></div>
-      <div class="row"><span>Tax (${settings.taxRate}%)</span><span>${money(tax)}</span></div>
-      <div class="row total"><span>Total</span><span>${money(total)}</span></div>
+      <div class="row"><span>Subtotal</span><span id="sum-sub">${money(subtotal)}</span></div>
+      <div class="row"><span>Discount</span><span id="sum-disc">−${money(disc)}</span></div>
+      <div class="row"><span>Tax (${settings.taxRate}%)</span><span id="sum-tax">${money(tax)}</span></div>
+      <div class="row total"><span>Total</span><span id="sum-total">${money(total)}</span></div>
       <button class="btn primary block mt" id="checkout" ${lines.length ? '' : 'disabled'}>✓ Complete Sale · ${money(total)}</button>
     </div>`;
 
@@ -333,16 +358,28 @@ function renderCartPanel() {
     cart.clear();
     renderCartPanel();
   });
-  panel.querySelector('#cart-discount').addEventListener('input', () => renderCartPanel());
+  panel.querySelector('#cart-discount').addEventListener('input', () => updateCartSums());
   panel.querySelectorAll('[data-inc]').forEach((b) => (b.onclick = () => bumpQty(Number(b.dataset.inc), 0.5)));
   panel.querySelectorAll('[data-dec]').forEach((b) => (b.onclick = () => bumpQty(Number(b.dataset.dec), -0.5)));
   panel.querySelectorAll('[data-rm]').forEach((b) => (b.onclick = () => {
     cart.delete(Number(b.dataset.rm));
     renderCartPanel();
   }));
-  panel.querySelectorAll('[data-qty]').forEach((inp) =>
-    (inp.onchange = () => {
+  panel.querySelectorAll('[data-qty]').forEach((inp) => {
+    inp.addEventListener('input', () => {
       const item = cart.get(Number(inp.dataset.qty));
+      if (!item) return;
+      let v = Number(inp.value);
+      if (!Number.isFinite(v) || v <= 0) return;
+      if (v > item.product.stockQty + 1e-9) v = item.product.stockQty;
+      item.qty = Math.round(v * 100) / 100;
+      const lt = panel.querySelector(`[data-lt="${inp.dataset.qty}"]`);
+      if (lt) lt.textContent = money(Math.round(item.qty * item.product.priceCents));
+      updateCartSums();
+    });
+    inp.addEventListener('change', () => {
+      const item = cart.get(Number(inp.dataset.qty));
+      if (!item) return;
       let v = Number(inp.value);
       if (!Number.isFinite(v) || v <= 0) v = 1;
       if (v > item.product.stockQty + 1e-9) {
@@ -351,8 +388,8 @@ function renderCartPanel() {
       }
       item.qty = Math.round(v * 100) / 100;
       renderCartPanel();
-    })
-  );
+    });
+  });
   const custSel = panel.querySelector('#cart-customer');
   custSel.value = selectedCustomerId ?? '';
   custSel.onchange = () => (selectedCustomerId = custSel.value ? Number(custSel.value) : null);
@@ -360,6 +397,7 @@ function renderCartPanel() {
     saleChannel = e.target.value;
     renderCartPanel();
   };
+  panel.querySelector('#cart-pay').onchange = (e) => (salePayMethod = e.target.value);
 
   panel.querySelector('#checkout')?.addEventListener('click', async () => {
     const btn = $('#checkout');
@@ -369,8 +407,8 @@ function renderCartPanel() {
       const payload = {
         items: [...cart.values()].map(({ product, qty }) => ({ productId: product.id, qty })),
         customerId: selectedCustomerId || null,
-        discountPct: Number($('#cart-discount').value) || 0,
-        paymentMethod: $('#cart-pay').value,
+        discountPct: Math.min(Math.max(Number($('#cart-discount').value) || 0, 0), 100),
+        paymentMethod: salePayMethod,
         channel: saleChannel,
       };
       if (saleChannel !== 'retail' && !payload.customerId)
@@ -410,6 +448,7 @@ let posCategories = [];
 let posCustomers = [];
 let selectedCustomerId = null;
 let saleChannel = 'retail';
+let salePayMethod = 'cash';
 
 async function bootPos(skipData = false) {
   const tiles = $('#pos-tiles');
