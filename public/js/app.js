@@ -121,6 +121,7 @@ function receiptHTML(s) {
 }
 
 function openReceipt(sale) {
+  sale = { ...sale, createdAt: sale.createdAt || sale.created_at };
   openModal(
     modalShell(
       `Order #${sale.id}`,
@@ -870,6 +871,166 @@ ROUTES.inventory = ['Inventory', async (el) => {
   await loadRows();
 }];
 
+async function newOrderForm(onDone) {
+  const [prods, custs] = await Promise.all([api('/products?active=1'), api('/customers')]);
+  let channel = 'retail';
+  const lines = [{ productId: '', qty: '' }];
+
+  const priceFor = (p) => (channel === 'retail' ? p.priceCents : (p.wholesalePriceCents || Math.round(p.priceCents * 0.8)));
+
+  const productOptions = (selId) =>
+    '<option value="">Select produce…</option>' +
+    prods
+      .map((p) => {
+        const out = p.stockQty <= 0;
+        return `<option value="${p.id}" ${selId === p.id ? 'selected' : ''} ${out ? 'disabled' : ''}>${esc(p.emoji)} ${esc(p.name)} — ${money(priceFor(p))}/${esc(p.unit)} (${out ? 'out of stock' : fmtQty(p.stockQty) + ' avail'})</option>`;
+      })
+      .join('');
+
+  const calcTotals = () => {
+    const taxRate = Number(settings.taxRate) || 0;
+    const pct = Math.min(Math.max(Number($('#nof-discount')?.value) || 0, 0), 100);
+    let subtotal = 0;
+    for (const l of lines) {
+      const p = prods.find((x) => x.id === Number(l.productId));
+      const qty = Number(l.qty);
+      if (p && qty > 0) subtotal += Math.round(qty * priceFor(p));
+    }
+    const disc = Math.round((subtotal * pct) / 100);
+    const tax = Math.round(((subtotal - disc) * taxRate) / 100);
+    return { subtotal, disc, tax, total: subtotal - disc + tax };
+  };
+
+  const renderTotals = () => {
+    const { subtotal, disc, tax, total } = calcTotals();
+    $('#nof-sub').textContent = money(subtotal);
+    $('#nof-disc').textContent = '−' + money(disc);
+    $('#nof-tax').textContent = money(tax);
+    $('#nof-total').textContent = money(total);
+    $('#nof-save').textContent = `✓ Create Order · ${money(total)}`;
+  };
+
+  const renderLines = () => {
+    $('#order-lines').innerHTML = lines
+      .map((l, idx) => {
+        const p = prods.find((x) => x.id === Number(l.productId));
+        const lineTotal = p && Number(l.qty) > 0 ? Math.round(Number(l.qty) * priceFor(p)) : 0;
+        return `<div class="flex mb" data-ln="${idx}">
+          <select class="field grow" data-f="productId">${productOptions(Number(l.productId))}</select>
+          <input class="field" style="width:100px" type="number" step="${p && p.unit === 'kg' ? '0.25' : '1'}" min="0" ${p ? `max="${p.stockQty}"` : ''} placeholder="Qty" data-f="qty" value="${l.qty ?? ''}">
+          <div class="muted small" style="width:80px;text-align:right;align-self:center">${p ? money(lineTotal) : ''}</div>
+          <button type="button" class="btn sm danger" data-rm="${idx}">✕</button>
+        </div>`;
+      })
+      .join('');
+    $$('#order-lines select,#order-lines input').forEach((inp) =>
+      (inp.onchange = () => {
+        const idx = Number(inp.closest('[data-ln]').dataset.ln);
+        let val = inp.value;
+        if (inp.dataset.f === 'qty' && val !== '') {
+          const p = prods.find((x) => x.id === Number(lines[idx].productId));
+          if (p && Number(val) > p.stockQty + 1e-9) {
+            toast(`Stock limited to ${fmtQty(p.stockQty)} ${p.unit} of ${p.name}`, true);
+            val = String(p.stockQty);
+          }
+        }
+        lines[idx][inp.dataset.f] = val;
+        renderLines();
+        renderTotals();
+      })
+    );
+    $$('#order-lines [data-rm]').forEach((b) => (b.onclick = () => {
+      lines.splice(Number(b.dataset.rm), 1);
+      if (!lines.length) lines.push({ productId: '', qty: '' });
+      renderLines();
+      renderTotals();
+    }));
+  };
+
+  openModal(
+    modalShell(
+      'New Order',
+      `<form id="nof">
+        <div class="form-cols">
+          <div class="form-row"><label>Sale channel</label><select name="channel" class="field" id="nof-channel">
+            <option value="retail">🛒 Retail counter</option>
+            <option value="b2b">🏢 Wholesale / B2B</option>
+          </select></div>
+          <div class="form-row"><label>Customer<span id="nof-cust-req"></span></label><select name="customerId" class="field" id="nof-customer">
+            <option value="">Walk-in customer</option>
+            ${custs.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}
+          </select></div>
+        </div>
+        <label style="font-size:13px;font-weight:600;color:var(--muted)">Items</label>
+        <div id="order-lines"></div>
+        <button type="button" class="btn sm" id="nof-add-line">＋ Add product</button>
+        <div class="form-cols mt">
+          <div class="form-row"><label>Discount %</label><input id="nof-discount" name="discountPct" class="field" type="number" min="0" max="100" value="0"></div>
+          <div class="form-row"><label>Payment</label><select name="paymentMethod" class="field">
+            <option value="cash">💵 Cash</option><option value="card">💳 Card</option><option value="mobile">📱 Mobile</option>
+          </select></div>
+        </div>
+        <div class="cart-sums mt">
+          <div class="row"><span>Subtotal</span><span id="nof-sub">$0.00</span></div>
+          <div class="row"><span>Discount</span><span id="nof-disc">−$0.00</span></div>
+          <div class="row"><span>Tax (${settings.taxRate}%)</span><span id="nof-tax">$0.00</span></div>
+          <div class="row total"><span>Total</span><span id="nof-total">$0.00</span></div>
+        </div>
+      </form>`,
+      `<button class="btn" data-close>Cancel</button><button class="btn primary" id="nof-save">✓ Create Order</button>`
+    ),
+    true
+  );
+  bindModalClose($('#modal-content'));
+  renderLines();
+  renderTotals();
+
+  $('#nof-add-line').onclick = () => {
+    lines.push({ productId: '', qty: '' });
+    renderLines();
+    renderTotals();
+  };
+  $('#nof-discount').addEventListener('input', renderTotals);
+  $('#nof-channel').onchange = (e) => {
+    channel = e.target.value;
+    $('#nof-cust-req').textContent = channel !== 'retail' ? ' *' : '';
+    renderLines();
+    renderTotals();
+  };
+
+  $('#nof-save').onclick = async () => {
+    const f = new FormData($('#nof'));
+    const items = lines
+      .filter((l) => l.productId && Number(l.qty) > 0)
+      .map((l) => ({ productId: Number(l.productId), qty: Number(l.qty) }));
+    if (!items.length) return toast('Add at least one product', true);
+    const customerId = f.get('customerId') ? Number(f.get('customerId')) : null;
+    if (channel !== 'retail' && !customerId) return toast('Select a customer for B2B sales', true);
+    const btn = $('#nof-save');
+    btn.disabled = true;
+    try {
+      const sale = await api('/sales', {
+        method: 'POST',
+        body: JSON.stringify({
+          items,
+          customerId,
+          discountPct: Math.min(Math.max(Number(f.get('discountPct')) || 0, 0), 100),
+          paymentMethod: f.get('paymentMethod'),
+          channel,
+        }),
+      });
+      closeModal();
+      toast(`Order #${sale.id} created · ${money(sale.total_cents)}`);
+      const cust = custs.find((c) => c.id === sale.customer_id);
+      openReceipt({ ...sale, customerName: cust?.name });
+      onDone?.();
+    } catch (e) {
+      btn.disabled = false;
+      toast(e.message, true);
+    }
+  };
+}
+
 const ORDERS_PAGE = 50;
 let orderOffset = 0;
 
@@ -882,6 +1043,7 @@ ROUTES.orders = ['Orders', async (el) => {
         <option value="">Any status</option><option value="completed">Completed</option><option value="refunded">Refunded</option>
       </select>
       <div class="spacer"></div>
+      <button class="btn primary" id="new-order">＋ New Order</button>
       <a class="btn" id="export-csv" href="/api/export/orders.csv" download>⬇ Export CSV</a>
     </div>
     <div class="tbl-wrap"><table class="tbl">
@@ -926,6 +1088,7 @@ ROUTES.orders = ['Orders', async (el) => {
     orderOffset += ORDERS_PAGE;
     load(false);
   };
+  $('#new-order').onclick = () => newOrderForm(() => load());
   await load();
 }];
 
